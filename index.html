@@ -401,14 +401,39 @@ async function fetchMapillaryForBbox(bounds) {
   try {
     const url = `https://graph.mapillary.com/images?fields=id,thumb_1024_url,geometry&bbox=${bbox}&limit=2000&access_token=${MAPILLARY_TOKEN}`;
     const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
-    if (!resp.ok) return;
+    if (!resp.ok) {
+      console.error('Mapillary HTTP', resp.status, await resp.text());
+      state.mapillaryImages = [];
+      return;
+    }
     const data = await resp.json();
-    state.mapillaryImages = (data.data || []).map(img => ({
+    const images = (data.data || []).filter(img => img.geometry && img.thumb_1024_url);
+    state.mapillaryImages = images.map(img => ({
       lat: img.geometry.coordinates[1],
       lng: img.geometry.coordinates[0],
       url: img.thumb_1024_url,
     }));
-  } catch (_) { state.mapillaryImages = []; }
+    console.log(`Mapillary: ${state.mapillaryImages.length} bilder hämtade för bbox`);
+  } catch (e) {
+    console.error('Mapillary fetch failed:', e);
+    state.mapillaryImages = [];
+  }
+}
+
+// Search Wikimedia Commons for an image by name (used for artworks without image tag)
+async function wikimediaCommonsSearch(name) {
+  try {
+    const url = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(name)}&srnamespace=6&srlimit=3&format=json&origin=*`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    const data = await resp.json();
+    const hits = data.query?.search || [];
+    for (const hit of hits) {
+      // Only accept results where the article name is similar to our search
+      const title = hit.title.replace('File:', '');
+      return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(title)}?width=400`;
+    }
+  } catch (_) {}
+  return null;
 }
 
 function distanceM(lat1, lng1, lat2, lng2) {
@@ -503,9 +528,16 @@ function buildPopup(elem, cat, latlng, knownImgUrl) {
     });
   }
 
-  // Async Wikidata image if no known image
-  if (!knownImgUrl && tags.wikidata) {
-    wikidataImageUrl(tags.wikidata).then(imgUrl => {
+  // Async image lookup if no known image:
+  // Wikidata P18 first, then Commons name search for artwork
+  if (!knownImgUrl) {
+    const asyncImg = tags.wikidata
+      ? wikidataImageUrl(tags.wikidata)
+      : (cat.key === 'foto' && name !== 'Namnlös')
+        ? wikimediaCommonsSearch(name)
+        : Promise.resolve(null);
+
+    asyncImg.then(imgUrl => {
       if (!imgUrl) return;
       const slot = document.getElementById(slotId);
       if (!slot) return;
