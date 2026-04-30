@@ -777,6 +777,27 @@ async function fetchOverpass(query) {
   return null;
 }
 
+// Build one combined Overpass query for all active categories
+function buildCombinedQuery(bbox) {
+  const parts = CATEGORIES.flatMap(cat => cat.tags.map(t => `${t}(${bbox});`));
+  return `[out:json][timeout:90];(${parts.join('')});out center 2000;`;
+}
+
+// Distribute fetched elements to the right category based on their tags
+function categorizElem(elem) {
+  const tags = elem.tags || {};
+  for (const cat of CATEGORIES) {
+    for (const tagExpr of cat.tags) {
+      // Parse "node[key=value]" or "node[key=value][key2=value2]"
+      const conditions = [...tagExpr.matchAll(/\[([^\]=]+)(?:=([^\]]+))?\]/g)];
+      if (conditions.every(([, k, v]) => v ? tags[k] === v : tags[k] !== undefined)) {
+        return cat;
+      }
+    }
+  }
+  return null;
+}
+
 async function loadCategory(cat, bbox) {
   const query = buildQuery(cat, bbox);
   const data = await fetchOverpass(query);
@@ -828,19 +849,56 @@ async function loadArea() {
   state.loadedBbox = bbox;
   setProgress(2);
 
-  toast('📷 Hämtar Mapillary-foton…');
-  await fetchMapillaryForBbox(bounds);
-  toast(`📷 ${state.mapillaryImages.length} Mapillary-foton hittade`);
+  // Fetch Mapillary and OSM in parallel
+  toast('⏳ Hämtar kartdata…');
+  setProgress(10);
 
-  let done = 0;
-  for (const cat of CATEGORIES) {
-    const added = await loadCategory(cat, bbox);
-    done++;
-    setProgress(Math.round((done / CATEGORIES.length) * 100));
-    updateStats();
-    if (added > 0) toast(`${cat.icon} ${cat.label}: +${added} nya`);
-    await new Promise(r => setTimeout(r, 600));
+  const [osmData] = await Promise.all([
+    fetchOverpass(buildCombinedQuery(bbox)),
+    fetchMapillaryForBbox(bounds),
+  ]);
+
+  setProgress(60);
+  toast(`📷 ${state.mapillaryImages.length} Mapillary-foton`);
+
+  if (osmData?.elements) {
+    const icon = {};
+    CATEGORIES.forEach(cat => { icon[cat.key] = makeIcon(cat.color, false); });
+
+    osmData.elements.forEach(elem => {
+      const cat = categorizElem(elem);
+      if (!cat) return;
+
+      const uid = `${elem.type}/${elem.id}`;
+      if (state.seen[cat.key].has(uid)) return;
+      state.seen[cat.key].add(uid);
+
+      const latlng = getLatLng(elem);
+      if (!latlng) return;
+
+      const tags = elem.tags || {};
+
+      if (cat.key === 'foto') {
+        const hasName = !!(tags.name || tags['name:sv']);
+        const hasMedia = !!(tags.image || tags.wikimedia_commons || tags.wikidata || tags.wikipedia || tags.website || tags.url);
+        if (!hasName && !hasMedia) { state.seen[cat.key].delete(uid); return; }
+      }
+
+      const [lat, lng] = latlng;
+      const imgUrl = osmImageUrl(tags) || nearestMapillary(lat, lng);
+      const markerIcon = makeIcon(cat.color, !!imgUrl);
+
+      const marker = L.marker(latlng, { icon: markerIcon });
+      marker.bindPopup(buildPopup(elem, cat, latlng, imgUrl), { maxWidth: 260 });
+      state.markers[cat.key].push(marker);
+      state.counts[cat.key]++;
+
+      if (state.useClusters) state.clusters[cat.key].addLayer(marker);
+      else if (state.active.has(cat.key)) marker.addTo(map);
+    });
   }
+
+  updateStats();
 
   setProgress(100);
   toast('✅ Område laddat!');
