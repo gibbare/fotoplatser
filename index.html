@@ -343,14 +343,14 @@ const TILE_LAYERS = {
 const state = {
   active: new Set(CATEGORIES.map(c => c.key)),
   counts: {},
-  // markers keyed by "catKey:osmId" to deduplicate across area loads
   seen: {},
   markers: {},
   clusters: {},
   useClusters: true,
   currentLayer: 'topo',
   loading: false,
-  loadedBbox: null,   // last bbox that was loaded
+  loadedBbox: null,
+  mapillaryImages: [],   // [{lat, lng, url}] for current area
 };
 
 // ── Map init ─────────────────────────────────────────────────────────────────
@@ -395,14 +395,37 @@ async function wikidataImageUrl(wikidataId) {
   } catch (_) { return null; }
 }
 
-async function mapillaryImageUrl(lng, lat) {
+// Fetch all Mapillary images within a bbox and store in state
+async function fetchMapillaryForBbox(bounds) {
+  const bbox = `${bounds.getWest().toFixed(4)},${bounds.getSouth().toFixed(4)},${bounds.getEast().toFixed(4)},${bounds.getNorth().toFixed(4)}`;
   try {
-    const url = `https://graph.mapillary.com/images?fields=id,thumb_1024_url&closeto=${lng},${lat}&radius=200&limit=1&access_token=${MAPILLARY_TOKEN}`;
-    const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    if (!resp.ok) return null;
+    const url = `https://graph.mapillary.com/images?fields=id,thumb_1024_url,geometry&bbox=${bbox}&limit=2000&access_token=${MAPILLARY_TOKEN}`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!resp.ok) return;
     const data = await resp.json();
-    return data.data?.[0]?.thumb_1024_url || null;
-  } catch (_) { return null; }
+    state.mapillaryImages = (data.data || []).map(img => ({
+      lat: img.geometry.coordinates[1],
+      lng: img.geometry.coordinates[0],
+      url: img.thumb_1024_url,
+    }));
+  } catch (_) { state.mapillaryImages = []; }
+}
+
+function distanceM(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function nearestMapillary(lat, lng, radiusM = 200) {
+  let best = null, bestDist = radiusM;
+  for (const img of state.mapillaryImages) {
+    const d = distanceM(lat, lng, img.lat, img.lng);
+    if (d < bestDist) { bestDist = d; best = img.url; }
+  }
+  return best;
 }
 
 function imgWrap(imgUrl, name, slotId = null) {
@@ -414,13 +437,12 @@ function imgWrap(imgUrl, name, slotId = null) {
   return `<div class="popup-img-wrap" id="${slotId}" style="display:none"></div>`;
 }
 
-function buildPopup(elem, cat, latlng) {
+// knownImgUrl: already resolved image (OSM/Wikidata/Mapillary), or null
+function buildPopup(elem, cat, latlng, knownImgUrl) {
   const tags = elem.tags || {};
   const name = tags.name || tags['name:sv'] || 'Namnlös';
-  const osmType = elem.type === 'relation' ? 'relation' : elem.type === 'way' ? 'way' : 'node';
-  const popupId = `popup-${elem.type}-${elem.id}`;
+  const slotId = `popup-${elem.type}-${elem.id}-img`;
 
-  // Best external link: Wikipedia > website > nothing
   let linkHtml = '';
   if (tags.wikipedia) {
     const wp = tags.wikipedia.replace(/^sv:/, '');
@@ -429,17 +451,10 @@ function buildPopup(elem, cat, latlng) {
     linkHtml = `<a href="${tags.website || tags.url}" target="_blank">🌐 Webbplats</a>`;
   }
 
-  const staticImg = osmImageUrl(tags);
-  const slotId = `${popupId}-img`;
-
-  // Async image fetch: Wikidata first, then Mapillary as last resort
-  if (!staticImg) {
-    const [lat, lng] = latlng;
-    const tryAsync = tags.wikidata
-      ? wikidataImageUrl(tags.wikidata)
-      : Promise.resolve(null);
-
-    tryAsync.then(url => url || mapillaryImageUrl(lng, lat)).then(imgUrl => {
+  // If we have a confirmed image, show it directly.
+  // If wikidata tag exists but no image yet, try async (Wikidata → nothing).
+  if (!knownImgUrl && tags.wikidata) {
+    wikidataImageUrl(tags.wikidata).then(imgUrl => {
       if (!imgUrl) return;
       const slot = document.getElementById(slotId);
       if (!slot) return;
@@ -450,10 +465,10 @@ function buildPopup(elem, cat, latlng) {
     });
   }
 
-  return `${imgWrap(staticImg, name, slotId)}
+  return `${imgWrap(knownImgUrl, name, slotId)}
     <div class="popup-name">${cat.icon} ${name}</div>
     <div class="popup-type">${cat.label}</div>
-    <div class="popup-osm">${linkHtml}</div>`;
+    ${linkHtml ? `<div class="popup-osm">${linkHtml}</div>` : ''}`;
 }
 
 // ── Lightbox ─────────────────────────────────────────────────────────────────
@@ -657,12 +672,12 @@ async function loadCategory(cat, bbox) {
     if (!latlng) return;
 
     const tags = elem.tags || {};
-    // Only badge when we know for certain an image exists (not speculatively for wikidata)
-    const hasImage = !!osmImageUrl(tags);
-    const icon = makeIcon(cat.color, hasImage);
+    const [lat, lng] = latlng;
+    const imgUrl = osmImageUrl(tags) || nearestMapillary(lat, lng);
+    const icon = makeIcon(cat.color, !!imgUrl);
 
     const marker = L.marker(latlng, { icon });
-    marker.bindPopup(buildPopup(elem, cat, latlng), { maxWidth: 260 });
+    marker.bindPopup(buildPopup(elem, cat, latlng, imgUrl), { maxWidth: 260 });
     state.markers[cat.key].push(marker);
     state.counts[cat.key]++;
     added++;
@@ -680,9 +695,14 @@ async function loadArea() {
   loadAreaBtn.disabled = true;
   loadAreaBtn.textContent = '⏳ Laddar…';
 
+  const bounds = map.getBounds();
   const bbox = bboxString();
   state.loadedBbox = bbox;
   setProgress(2);
+
+  toast('📷 Hämtar Mapillary-foton…');
+  await fetchMapillaryForBbox(bounds);
+  toast(`📷 ${state.mapillaryImages.length} Mapillary-foton hittade`);
 
   let done = 0;
   for (const cat of CATEGORIES) {
