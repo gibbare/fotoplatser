@@ -878,10 +878,8 @@ async function loadArea() {
 
       const tags = elem.tags || {};
 
-      if (cat.key === 'foto') {
-        const hasName = !!(tags.name || tags['name:sv']);
-        const hasMedia = !!(tags.image || tags.wikimedia_commons || tags.wikidata || tags.wikipedia || tags.website || tags.url);
-        if (!hasName && !hasMedia) { state.seen[cat.key].delete(uid); return; }
+      if (cat.key === 'foto' || cat.key === 'hist') {
+        if (!(tags.name || tags['name:sv'])) { state.seen[cat.key].delete(uid); return; }
       }
 
       const [lat, lng] = latlng;
