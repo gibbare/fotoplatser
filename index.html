@@ -462,8 +462,20 @@ function imgWrap(imgUrl, name, slotId = null) {
   return `<div class="popup-img-wrap" id="${slotId}" style="display:none"></div>`;
 }
 
-// Find Wikipedia link for hist markers without an explicit wikipedia tag.
-// Priority: Wikidata sitelinks → sv geosearch 2km → en geosearch 2km → sv name search
+// Fetch thumbnail and link from Wikipedia REST summary API
+async function wikipediaImage(title, lang = 'sv') {
+  try {
+    const url = `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data.thumbnail?.source || null;
+  } catch (_) { return null; }
+}
+
+// Find Wikipedia link + thumbnail for hist markers without explicit wikipedia tag.
+// Priority: Wikidata sitelinks → sv geosearch 2km → sv name search
+// Returns { href, label, lang, title } so caller can also fetch the image.
 async function findHistWikipedia(tags, lat, lng) {
   // 1. Wikidata sitelinks — most precise
   if (tags.wikidata) {
@@ -472,8 +484,8 @@ async function findHistWikipedia(tags, lat, lng) {
       const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
       const data = await resp.json();
       const links = data.entities?.[tags.wikidata]?.sitelinks;
-      if (links?.svwiki) return { href: `https://sv.wikipedia.org/wiki/${encodeURIComponent(links.svwiki.title)}`, label: '📖 Wikipedia' };
-      if (links?.enwiki) return { href: `https://en.wikipedia.org/wiki/${encodeURIComponent(links.enwiki.title)}`, label: '📖 Wikipedia (en)' };
+      if (links?.svwiki) return { href: `https://sv.wikipedia.org/wiki/${encodeURIComponent(links.svwiki.title)}`, label: '📖 Wikipedia', lang: 'sv', title: links.svwiki.title };
+      if (links?.enwiki) return { href: `https://en.wikipedia.org/wiki/${encodeURIComponent(links.enwiki.title)}`, label: '📖 Wikipedia (en)', lang: 'en', title: links.enwiki.title };
     } catch (_) {}
   }
 
@@ -483,7 +495,7 @@ async function findHistWikipedia(tags, lat, lng) {
     const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
     const data = await resp.json();
     const hit = data.query?.geosearch?.[0];
-    if (hit) return { href: `https://sv.wikipedia.org/wiki/${encodeURIComponent(hit.title)}`, label: '📖 Wikipedia' };
+    if (hit) return { href: `https://sv.wikipedia.org/wiki/${encodeURIComponent(hit.title)}`, label: '📖 Wikipedia', lang: 'sv', title: hit.title };
   } catch (_) {}
 
   // 3. Swedish Wikipedia text search on place name
@@ -494,7 +506,7 @@ async function findHistWikipedia(tags, lat, lng) {
       const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
       const data = await resp.json();
       const hit = data.query?.search?.[0];
-      if (hit) return { href: `https://sv.wikipedia.org/wiki/${encodeURIComponent(hit.title)}`, label: '📖 Wikipedia' };
+      if (hit) return { href: `https://sv.wikipedia.org/wiki/${encodeURIComponent(hit.title)}`, label: '📖 Wikipedia', lang: 'sv', title: hit.title };
     } catch (_) {}
   }
 
@@ -518,34 +530,45 @@ function buildPopup(elem, cat, latlng, knownImgUrl) {
     linkHtml = `<a href="${tags.website || tags.url}" target="_blank">🌐 Webbplats</a>`;
   }
 
-  // For hist: if no link yet, search async and inject
+  // Inject image into the slot div
+  function injectImg(imgUrl) {
+    const slot = document.getElementById(slotId);
+    if (!slot || slot.children.length) return; // already filled
+    slot.innerHTML = `<img class="popup-img" src="${imgUrl}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/>`;
+    slot.style.display = '';
+    slot.onclick = () => openLightbox(imgUrl);
+    slot.style.cursor = 'zoom-in';
+  }
+
+  // If wikipedia tag present: fetch REST thumbnail immediately
+  if (!knownImgUrl && tags.wikipedia) {
+    const wpTitle = tags.wikipedia.replace(/^sv:/, '');
+    wikipediaImage(wpTitle, 'sv').then(imgUrl => { if (imgUrl) injectImg(imgUrl); });
+  }
+
+  // For hist without link: find Wikipedia link + its thumbnail
   const needsWikiLookup = cat.key === 'hist' && !linkHtml;
   if (needsWikiLookup) {
     findHistWikipedia(tags, lat, lng).then(result => {
       if (!result) return;
-      const slot = document.getElementById(linkSlotId);
-      if (slot) slot.innerHTML = `<a href="${result.href}" target="_blank">${result.label}</a>`;
+      const linkSlot = document.getElementById(linkSlotId);
+      if (linkSlot) linkSlot.innerHTML = `<a href="${result.href}" target="_blank">${result.label}</a>`;
+      // Also try to get the Wikipedia thumbnail if we still have no image
+      if (!knownImgUrl) {
+        wikipediaImage(result.title, result.lang).then(imgUrl => { if (imgUrl) injectImg(imgUrl); });
+      }
     });
   }
 
-  // Async image lookup if no known image:
-  // Wikidata P18 first, then Commons name search for artwork
-  if (!knownImgUrl) {
+  // Async image fallback chain (only if no known image and no wikipedia tag handled above)
+  if (!knownImgUrl && !tags.wikipedia) {
     const asyncImg = tags.wikidata
       ? wikidataImageUrl(tags.wikidata)
       : (cat.key === 'foto' && name !== 'Namnlös')
         ? wikimediaCommonsSearch(name)
         : Promise.resolve(null);
 
-    asyncImg.then(imgUrl => {
-      if (!imgUrl) return;
-      const slot = document.getElementById(slotId);
-      if (!slot) return;
-      slot.innerHTML = `<img class="popup-img" src="${imgUrl}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/>`;
-      slot.style.display = '';
-      slot.onclick = () => openLightbox(imgUrl);
-      slot.style.cursor = 'zoom-in';
-    });
+    asyncImg.then(imgUrl => { if (imgUrl) injectImg(imgUrl); });
   }
 
   const linkRow = linkHtml
