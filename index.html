@@ -152,7 +152,8 @@
   .leaflet-popup-content { margin: 12px 14px; }
   .popup-img-wrap { margin: -12px -14px 10px; border-radius: var(--radius) var(--radius) 0 0; overflow: hidden; max-height: 160px; }
   .popup-img { width: 100%; height: 160px; object-fit: cover; display: block; }
-  .popup-name { font-weight: 600; margin-bottom: 4px; }
+  .popup-name { font-weight: 600; margin-bottom: 2px; }
+  .popup-type { font-size: .75rem; color: var(--muted); margin-bottom: 8px; }
   .popup-desc { font-size: .8rem; color: var(--muted); margin-bottom: 6px; }
   .popup-tag { display: inline-block; background: var(--card); padding: 2px 6px; border-radius: 4px; font-size: .75rem; margin: 2px 2px 0 0; }
   .popup-osm { font-size: .75rem; color: var(--muted); margin-top: 6px; display: flex; gap: 10px; }
@@ -369,32 +370,28 @@ function resolveImageUrl(tags) {
 function buildPopup(elem, cat) {
   const tags = elem.tags || {};
   const name = tags.name || tags['name:sv'] || 'Namnlös';
-  const desc = tags.description || tags['description:sv'] || tags.note || '';
   const osmType = elem.type === 'relation' ? 'relation' : elem.type === 'way' ? 'way' : 'node';
-
-  const skipKeys = new Set(['name','name:sv','description','description:sv','note','source','image','wikimedia_commons','wikipedia']);
-  const relevantTags = Object.entries(tags)
-    .filter(([k]) => !skipKeys.has(k))
-    .slice(0, 6)
-    .map(([k, v]) => `<span class="popup-tag">${k}=${v}</span>`).join('');
 
   const imgUrl = resolveImageUrl(tags);
   const imgHtml = imgUrl
     ? `<div class="popup-img-wrap"><img class="popup-img" src="${imgUrl}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/></div>`
     : '';
 
-  const wikiHtml = tags.wikipedia
-    ? `<a class="popup-wiki" href="https://sv.wikipedia.org/wiki/${encodeURIComponent(tags.wikipedia.replace(/^sv:/,''))}" target="_blank">📖 Wikipedia</a>`
-    : '';
+  // Best external link: Wikipedia > website > OSM
+  let linkHtml;
+  if (tags.wikipedia) {
+    const wp = tags.wikipedia.replace(/^sv:/, '');
+    linkHtml = `<a href="https://sv.wikipedia.org/wiki/${encodeURIComponent(wp)}" target="_blank">📖 Läs mer</a>`;
+  } else if (tags.website || tags.url) {
+    linkHtml = `<a href="${tags.website || tags.url}" target="_blank">🌐 Webbplats</a>`;
+  } else {
+    linkHtml = `<a href="https://www.openstreetmap.org/${osmType}/${elem.id}" target="_blank">🗺 Visa på karta</a>`;
+  }
 
   return `${imgHtml}
     <div class="popup-name">${cat.icon} ${name}</div>
-    ${desc ? `<div class="popup-desc">${desc}</div>` : ''}
-    <div>${relevantTags}</div>
-    <div class="popup-osm">
-      <a href="https://www.openstreetmap.org/${osmType}/${elem.id}" target="_blank">Visa på OSM</a>
-      ${wikiHtml}
-    </div>`;
+    <div class="popup-type">${cat.label}</div>
+    <div class="popup-osm">${linkHtml}</div>`;
 }
 
 function getLatLng(elem) {
