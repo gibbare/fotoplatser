@@ -437,22 +437,60 @@ function imgWrap(imgUrl, name, slotId = null) {
   return `<div class="popup-img-wrap" id="${slotId}" style="display:none"></div>`;
 }
 
+// Find Wikipedia link for hist markers without an explicit wikipedia tag.
+// Priority: Wikidata sitelinks → Swedish Wikipedia geosearch → English geosearch.
+async function findHistWikipedia(tags, lat, lng) {
+  if (tags.wikidata) {
+    try {
+      const url = `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${tags.wikidata}&props=sitelinks&format=json&origin=*`;
+      const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      const data = await resp.json();
+      const links = data.entities?.[tags.wikidata]?.sitelinks;
+      if (links?.svwiki) return { href: `https://sv.wikipedia.org/wiki/${encodeURIComponent(links.svwiki.title)}`, label: '📖 Wikipedia (sv)' };
+      if (links?.enwiki) return { href: `https://en.wikipedia.org/wiki/${encodeURIComponent(links.enwiki.title)}`, label: '📖 Wikipedia (en)' };
+    } catch (_) {}
+  }
+
+  // Geosearch within 500 m on Swedish Wikipedia
+  try {
+    const url = `https://sv.wikipedia.org/w/api.php?action=query&list=geosearch&gscoord=${lat}|${lng}&gsradius=500&gslimit=1&format=json&origin=*`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    const data = await resp.json();
+    const hit = data.query?.geosearch?.[0];
+    if (hit) return { href: `https://sv.wikipedia.org/wiki/${encodeURIComponent(hit.title)}`, label: '📖 Wikipedia' };
+  } catch (_) {}
+
+  return null;
+}
+
 // knownImgUrl: already resolved image (OSM/Wikidata/Mapillary), or null
 function buildPopup(elem, cat, latlng, knownImgUrl) {
   const tags = elem.tags || {};
   const name = tags.name || tags['name:sv'] || 'Namnlös';
   const slotId = `popup-${elem.type}-${elem.id}-img`;
+  const linkSlotId = `popup-${elem.type}-${elem.id}-link`;
+  const [lat, lng] = latlng;
 
+  // Known static link from OSM tags
   let linkHtml = '';
   if (tags.wikipedia) {
     const wp = tags.wikipedia.replace(/^sv:/, '');
-    linkHtml = `<a href="https://sv.wikipedia.org/wiki/${encodeURIComponent(wp)}" target="_blank">📖 Läs mer</a>`;
+    linkHtml = `<a href="https://sv.wikipedia.org/wiki/${encodeURIComponent(wp)}" target="_blank">📖 Wikipedia</a>`;
   } else if (tags.website || tags.url) {
     linkHtml = `<a href="${tags.website || tags.url}" target="_blank">🌐 Webbplats</a>`;
   }
 
-  // If we have a confirmed image, show it directly.
-  // If wikidata tag exists but no image yet, try async (Wikidata → nothing).
+  // For hist: if no link yet, search async and inject
+  const needsWikiLookup = cat.key === 'hist' && !linkHtml;
+  if (needsWikiLookup) {
+    findHistWikipedia(tags, lat, lng).then(result => {
+      if (!result) return;
+      const slot = document.getElementById(linkSlotId);
+      if (slot) slot.innerHTML = `<a href="${result.href}" target="_blank">${result.label}</a>`;
+    });
+  }
+
+  // Async Wikidata image if no known image
   if (!knownImgUrl && tags.wikidata) {
     wikidataImageUrl(tags.wikidata).then(imgUrl => {
       if (!imgUrl) return;
@@ -465,10 +503,16 @@ function buildPopup(elem, cat, latlng, knownImgUrl) {
     });
   }
 
+  const linkRow = linkHtml
+    ? `<div class="popup-osm">${linkHtml}</div>`
+    : needsWikiLookup
+      ? `<div class="popup-osm" id="${linkSlotId}"></div>`
+      : '';
+
   return `${imgWrap(knownImgUrl, name, slotId)}
     <div class="popup-name">${cat.icon} ${name}</div>
     <div class="popup-type">${cat.label}</div>
-    ${linkHtml ? `<div class="popup-osm">${linkHtml}</div>` : ''}`;
+    ${linkRow}`;
 }
 
 // ── Lightbox ─────────────────────────────────────────────────────────────────
