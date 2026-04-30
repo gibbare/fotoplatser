@@ -380,7 +380,9 @@ function makeIcon(color, hasImage = false) {
 }
 
 function osmImageUrl(tags) {
-  if (tags.image && tags.image.startsWith('http')) return tags.image;
+  for (const key of ['image', 'image:0', 'image:1', 'photo_url', 'contact:image']) {
+    if (tags[key] && tags[key].startsWith('http')) return tags[key];
+  }
   if (tags.wikimedia_commons) {
     let file = tags.wikimedia_commons;
     const m = file.match(/File:(.+)$/);
@@ -857,7 +859,7 @@ async function loadCategory(cat, bbox) {
     // Skip foto-markers with no useful data — they clutter the map
     if (cat.key === 'foto') {
       const hasName = !!(tags.name || tags['name:sv']);
-      const hasMedia = !!(tags.image || tags.wikimedia_commons || tags.wikidata || tags.wikipedia || tags.website || tags.url);
+      const hasMedia = !!(tags.image || tags['image:0'] || tags['image:1'] || tags.photo_url || tags['contact:image'] || tags.wikimedia_commons || tags.wikidata || tags.wikipedia || tags.website || tags.url);
       if (!hasName && !hasMedia) { state.seen[cat.key].delete(uid); return; }
     }
 
