@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fotokarta Sverige</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --panel: #16213e;
+    --card: #0f3460;
+    --accent: #e94560;
+    --text: #eaeaea;
+    --muted: #888;
+    --border: #2a2a4a;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Segoe UI', sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* Header */
+  header {
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    padding: 0 16px;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-shrink: 0;
+    z-index: 1000;
+    position: relative;
+  }
+  header h1 { font-size: 1rem; font-weight: 600; flex: 1; }
+  header h1 span { color: var(--accent); }
+  #burger-btn {
+    background: none; border: none; cursor: pointer; color: var(--text);
+    display: flex; flex-direction: column; gap: 4px; padding: 4px;
+  }
+  #burger-btn span { display: block; width: 22px; height: 2px; background: var(--text); border-radius: 2px; transition: .2s; }
+
+  /* Progress bar */
+  #progress-bar-wrap { height: 3px; background: var(--border); flex-shrink: 0; }
+  #progress-bar { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+
+  /* Map area */
+  #main { display: flex; flex: 1; overflow: hidden; }
+  #map { flex: 1; }
+
+  /* Side panel */
+  #panel {
+    width: 300px;
+    background: var(--panel);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transform: translateX(100%);
+    transition: transform .25s ease;
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 900;
+  }
+  #panel.open { transform: translateX(0); }
+  #panel-inner { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 20px; }
+
+  .panel-section h3 { font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 10px; }
+
+  /* Category chips */
+  #chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    display: flex; align-items: center; gap: 5px;
+    padding: 4px 10px; border-radius: 20px;
+    border: 1px solid transparent; cursor: pointer;
+    font-size: .8rem; transition: .15s;
+    background: var(--card);
+  }
+  .chip.active { border-color: currentColor; }
+  .chip .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  /* Layer buttons */
+  #layers { display: flex; flex-direction: column; gap: 6px; }
+  .layer-btn {
+    background: var(--card); border: 1px solid var(--border);
+    color: var(--text); padding: 8px 12px; border-radius: var(--radius);
+    cursor: pointer; font-size: .85rem; text-align: left; transition: .15s;
+  }
+  .layer-btn.active { border-color: var(--accent); color: var(--accent); }
+
+  /* Toggle switch */
+  .toggle-row { display: flex; align-items: center; justify-content: space-between; }
+  .toggle-row label { font-size: .85rem; }
+  .switch { position: relative; width: 36px; height: 20px; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute; inset: 0; background: var(--border);
+    border-radius: 20px; cursor: pointer; transition: .2s;
+  }
+  .slider:before {
+    content: ''; position: absolute; width: 14px; height: 14px;
+    left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: .2s;
+  }
+  input:checked + .slider { background: var(--accent); }
+  input:checked + .slider:before { transform: translateX(16px); }
+
+  /* Stats */
+  #stats { display: flex; flex-direction: column; gap: 8px; }
+  .stat-row { display: flex; flex-direction: column; gap: 3px; }
+  .stat-label { display: flex; justify-content: space-between; font-size: .8rem; }
+  .stat-bar { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+  .stat-fill { height: 100%; border-radius: 2px; transition: width .4s; }
+
+  /* Load area button */
+  #load-area-btn {
+    position: absolute;
+    bottom: 32px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 800;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 20px;
+    padding: 8px 20px;
+    font-size: .85rem;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 2px 10px rgba(0,0,0,.4);
+    display: none;
+    white-space: nowrap;
+  }
+  #load-area-btn:disabled { opacity: .5; cursor: default; }
+
+  /* Toast */
+  #toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(60px);
+    background: var(--card); color: var(--text); padding: 10px 18px;
+    border-radius: 20px; font-size: .85rem; z-index: 9999;
+    transition: transform .3s, opacity .3s; opacity: 0; pointer-events: none;
+    border: 1px solid var(--border);
+  }
+  #toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+
+  /* Leaflet popup override */
+  .leaflet-popup-content-wrapper { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); }
+  .leaflet-popup-tip { background: var(--panel); }
+  .leaflet-popup-content { margin: 12px 14px; }
+  .popup-img-wrap { margin: -12px -14px 10px; border-radius: var(--radius) var(--radius) 0 0; overflow: hidden; max-height: 160px; }
+  .popup-img { width: 100%; height: 160px; object-fit: cover; display: block; }
+  .popup-name { font-weight: 600; margin-bottom: 4px; }
+  .popup-desc { font-size: .8rem; color: var(--muted); margin-bottom: 6px; }
+  .popup-tag { display: inline-block; background: var(--card); padding: 2px 6px; border-radius: 4px; font-size: .75rem; margin: 2px 2px 0 0; }
+  .popup-osm { font-size: .75rem; color: var(--muted); margin-top: 6px; display: flex; gap: 10px; }
+  .popup-osm a, .popup-wiki { color: #70b0ff; text-decoration: none; }
+  .popup-wiki:hover, .popup-osm a:hover { text-decoration: underline; }
+
+  @media (max-width: 600px) {
+    /* Ensure the whole app fits within the phone screen */
+    html, body { height: 100%; max-height: 100vh; overflow: hidden; }
+
+    #main {
+      padding: 6px;
+      background: var(--bg);
+    }
+
+    #map {
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      /* Constrain to remaining viewport height minus header + progress bar */
+      max-height: calc(100vh - 51px);
+      overflow: hidden;
+    }
+
+    #panel { width: 100%; }
+
+    /* Move load-area button a bit higher so it clears mobile browser chrome */
+    #load-area-btn { bottom: 48px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Foto<span>karta</span> Sverige</h1>
+  <button id="burger-btn" title="Öppna meny">
+    <span></span><span></span><span></span>
+  </button>
+</header>
+<div id="progress-bar-wrap"><div id="progress-bar"></div></div>
+
+<div id="main">
+  <div id="map">
+    <button id="load-area-btn">🔄 Ladda detta område</button>
+  </div>
+  <div id="panel">
+    <div id="panel-inner">
+      <div class="panel-section">
+        <h3>Kategorier</h3>
+        <div id="chips"></div>
+      </div>
+      <div class="panel-section">
+        <h3>Kartlager</h3>
+        <div id="layers">
+          <button class="layer-btn active" data-layer="topo">Terrängkarta (OpenTopo)</button>
+          <button class="layer-btn" data-layer="dark">Mörkt (CartoDB)</button>
+          <button class="layer-btn" data-layer="satellite">Satellit (Esri)</button>
+        </div>
+      </div>
+      <div class="panel-section">
+        <h3>Inställningar</h3>
+        <div class="toggle-row">
+          <label>Kluster</label>
+          <label class="switch">
+            <input type="checkbox" id="cluster-toggle" checked>
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+      <div class="panel-section">
+        <h3>Statistik</h3>
+        <div id="stats"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script>
+// ── Categories ──────────────────────────────────────────────────────────────
+// Each category defines OSM tags to fetch. The bbox placeholder {BBOX} is
+// replaced at query-time with the current map viewport.
+const CATEGORIES = [
+  {
+    key: 'utsiktsplats', label: 'Utsiktsplats', color: '#f0d080', icon: '🔭',
+    tags: [
+      'node[tourism=viewpoint]',
+      'way[tourism=viewpoint]',
+      'node[man_made=tower][tourism=viewpoint]',
+    ]
+  },
+  {
+    key: 'natur', label: 'Natur', color: '#72e0a0', icon: '🌿',
+    tags: [
+      'node[leisure=nature_reserve]',
+      'way[leisure=nature_reserve]',
+      'relation[leisure=nature_reserve]',
+    ]
+  },
+  {
+    key: 'vatten', label: 'Vatten', color: '#70c0f0', icon: '💧',
+    tags: [
+      'node[waterway=waterfall]',
+      'node[waterway=rapids]',
+      'node[natural=waterfall]',
+      'way[waterway=waterfall]',
+    ]
+  },
+  {
+    key: 'foto', label: 'Konst/Foto', color: '#d080f0', icon: '📷',
+    tags: [
+      'node[tourism=artwork]',
+      'way[tourism=artwork]',
+    ]
+  },
+  {
+    key: 'bad', label: 'Bad & Strand', color: '#f09060', icon: '🏖️',
+    tags: [
+      'node[natural=beach]',
+      'way[natural=beach]',
+      'node[leisure=swimming_area]',
+      'way[leisure=swimming_area]',
+    ]
+  },
+  {
+    key: 'fagel', label: 'Fågelskådning', color: '#a0d070', icon: '🐦',
+    tags: [
+      'node[leisure=bird_hide]',
+      'node[amenity=bird_hide]',
+      'way[leisure=bird_hide]',
+    ]
+  },
+  {
+    key: 'hist', label: 'Historia', color: '#e09060', icon: '🏰',
+    tags: [
+      'node[historic=castle]',
+      'node[historic=ruins]',
+      'node[historic=monument]',
+      'node[historic=memorial]',
+      'node[historic=archaeological_site]',
+      'node[historic=fort]',
+      'way[historic=castle]',
+      'way[historic=ruins]',
+    ]
+  },
+  {
+    key: 'urban', label: 'Urban', color: '#b080e0', icon: '🏙️',
+    tags: [
+      'node[man_made=tower][tourism=attraction]',
+      'node[amenity=arts_centre]',
+      'way[amenity=arts_centre]',
+    ]
+  },
+];
+
+const ENDPOINTS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.openstreetmap.ru/api/interpreter',
+];
+
+const TILE_LAYERS = {
+  topo: L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', { maxZoom: 17, attribution: '© OpenTopoMap' }),
+  dark: L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { maxZoom: 19, attribution: '© CartoDB' }),
+  satellite: L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 18, attribution: '© Esri' }),
+};
+
+// ── State ────────────────────────────────────────────────────────────────────
+const state = {
+  active: new Set(CATEGORIES.map(c => c.key)),
+  counts: {},
+  // markers keyed by "catKey:osmId" to deduplicate across area loads
+  seen: {},
+  markers: {},
+  clusters: {},
+  useClusters: true,
+  currentLayer: 'topo',
+  loading: false,
+  loadedBbox: null,   // last bbox that was loaded
+};
+
+// ── Map init ─────────────────────────────────────────────────────────────────
+// Start at center of Sweden until geolocation resolves
+const map = L.map('map', { zoomControl: true }).setView([62.5, 17], 5);
+TILE_LAYERS.topo.addTo(map);
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function makeIcon(color) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
+    <circle cx="11" cy="11" r="9" fill="${color}" stroke="#fff" stroke-width="2"/>
+  </svg>`;
+  return L.divIcon({ html: svg, className: '', iconSize: [22,22], iconAnchor: [11,11], popupAnchor: [0,-12] });
+}
+
+function resolveImageUrl(tags) {
+  // Direct image URL
+  if (tags.image && tags.image.startsWith('http')) return tags.image;
+
+  // Wikimedia Commons: "File:Foo.jpg" or full commons URL
+  if (tags.wikimedia_commons) {
+    let file = tags.wikimedia_commons;
+    // Strip prefix if full URL like https://commons.wikimedia.org/wiki/File:Foo.jpg
+    const m = file.match(/File:(.+)$/);
+    if (m) file = m[1];
+    return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file)}?width=400`;
+  }
+
+  // Wikipedia article → try to get the lead image via REST API (async, skip for now)
+  return null;
+}
+
+function buildPopup(elem, cat) {
+  const tags = elem.tags || {};
+  const name = tags.name || tags['name:sv'] || 'Namnlös';
+  const desc = tags.description || tags['description:sv'] || tags.note || '';
+  const osmType = elem.type === 'relation' ? 'relation' : elem.type === 'way' ? 'way' : 'node';
+
+  const skipKeys = new Set(['name','name:sv','description','description:sv','note','source','image','wikimedia_commons','wikipedia']);
+  const relevantTags = Object.entries(tags)
+    .filter(([k]) => !skipKeys.has(k))
+    .slice(0, 6)
+    .map(([k, v]) => `<span class="popup-tag">${k}=${v}</span>`).join('');
+
+  const imgUrl = resolveImageUrl(tags);
+  const imgHtml = imgUrl
+    ? `<div class="popup-img-wrap"><img class="popup-img" src="${imgUrl}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/></div>`
+    : '';
+
+  const wikiHtml = tags.wikipedia
+    ? `<a class="popup-wiki" href="https://sv.wikipedia.org/wiki/${encodeURIComponent(tags.wikipedia.replace(/^sv:/,''))}" target="_blank">📖 Wikipedia</a>`
+    : '';
+
+  return `${imgHtml}
+    <div class="popup-name">${cat.icon} ${name}</div>
+    ${desc ? `<div class="popup-desc">${desc}</div>` : ''}
+    <div>${relevantTags}</div>
+    <div class="popup-osm">
+      <a href="https://www.openstreetmap.org/${osmType}/${elem.id}" target="_blank">Visa på OSM</a>
+      ${wikiHtml}
+    </div>`;
+}
+
+function getLatLng(elem) {
+  if (elem.type === 'node') return [elem.lat, elem.lon];
+  if (elem.center) return [elem.center.lat, elem.center.lon];
+  return null;
+}
+
+function bboxString() {
+  const b = map.getBounds();
+  // south,west,north,east — Overpass format
+  return `${b.getSouth().toFixed(4)},${b.getWest().toFixed(4)},${b.getNorth().toFixed(4)},${b.getEast().toFixed(4)}`;
+}
+
+function buildQuery(cat, bbox) {
+  const parts = cat.tags.map(t => `${t}(${bbox});`).join('');
+  return `[out:json][timeout:60];(${parts});out center 300;`;
+}
+
+function createClusterGroup(cat) {
+  return L.markerClusterGroup({
+    maxClusterRadius: 60,
+    // Never spiderfy — at max zoom overlapping markers open their own popups
+    spiderfyOnMaxZoom: false,
+    // Zoom in on cluster click (default true, explicit for clarity)
+    zoomToBoundsOnClick: true,
+    iconCreateFunction: cluster => {
+      const n = cluster.getChildCount();
+      return L.divIcon({
+        html: `<div style="background:${cat.color};color:#1a1a2e;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border:2px solid #fff;">${n}</div>`,
+        className: '', iconSize: [34,34], iconAnchor: [17,17],
+      });
+    }
+  });
+}
+
+CATEGORIES.forEach(cat => {
+  state.counts[cat.key] = 0;
+  state.seen[cat.key] = new Set();
+  state.markers[cat.key] = [];
+  state.clusters[cat.key] = createClusterGroup(cat);
+  if (state.useClusters) state.clusters[cat.key].addTo(map);
+});
+
+// ── UI builders ──────────────────────────────────────────────────────────────
+function buildChips() {
+  const container = document.getElementById('chips');
+  CATEGORIES.forEach(cat => {
+    const chip = document.createElement('button');
+    chip.className = 'chip active';
+    chip.dataset.key = cat.key;
+    chip.style.color = cat.color;
+    chip.innerHTML = `<span class="dot" style="background:${cat.color}"></span>${cat.icon} ${cat.label}`;
+    chip.addEventListener('click', () => toggleCategory(cat.key, chip));
+    container.appendChild(chip);
+  });
+}
+
+function buildStats() {
+  const container = document.getElementById('stats');
+  container.innerHTML = '';
+  CATEGORIES.forEach(cat => {
+    const row = document.createElement('div');
+    row.className = 'stat-row';
+    row.innerHTML = `
+      <div class="stat-label">
+        <span>${cat.icon} ${cat.label}</span>
+        <span id="stat-count-${cat.key}">0</span>
+      </div>
+      <div class="stat-bar"><div class="stat-fill" id="stat-fill-${cat.key}" style="width:0%;background:${cat.color}"></div></div>`;
+    container.appendChild(row);
+  });
+}
+
+function updateStats() {
+  const max = Math.max(...Object.values(state.counts), 1);
+  CATEGORIES.forEach(cat => {
+    const count = state.counts[cat.key] || 0;
+    const el = document.getElementById(`stat-count-${cat.key}`);
+    const fill = document.getElementById(`stat-fill-${cat.key}`);
+    if (el) el.textContent = count;
+    if (fill) fill.style.width = Math.round((count / max) * 100) + '%';
+  });
+}
+
+function toggleCategory(key, chip) {
+  if (state.active.has(key)) {
+    state.active.delete(key);
+    chip.classList.remove('active');
+    map.removeLayer(state.clusters[key]);
+    if (!state.useClusters) state.markers[key].forEach(m => map.removeLayer(m));
+  } else {
+    state.active.add(key);
+    chip.classList.add('active');
+    if (state.useClusters) state.clusters[key].addTo(map);
+    else state.markers[key].forEach(m => m.addTo(map));
+  }
+}
+
+// ── Layer / cluster controls ─────────────────────────────────────────────────
+document.getElementById('layers').addEventListener('click', e => {
+  const btn = e.target.closest('.layer-btn');
+  if (!btn) return;
+  const key = btn.dataset.layer;
+  if (key === state.currentLayer) return;
+  TILE_LAYERS[state.currentLayer].removeFrom(map);
+  TILE_LAYERS[key].addTo(map);
+  state.currentLayer = key;
+  document.querySelectorAll('.layer-btn').forEach(b => b.classList.toggle('active', b.dataset.layer === key));
+});
+
+document.getElementById('cluster-toggle').addEventListener('change', e => {
+  state.useClusters = e.target.checked;
+  CATEGORIES.forEach(cat => {
+    if (state.useClusters) {
+      state.markers[cat.key].forEach(m => { map.removeLayer(m); state.clusters[cat.key].addLayer(m); });
+      if (state.active.has(cat.key)) state.clusters[cat.key].addTo(map);
+      else map.removeLayer(state.clusters[cat.key]);
+    } else {
+      map.removeLayer(state.clusters[cat.key]);
+      state.clusters[cat.key].clearLayers();
+      if (state.active.has(cat.key)) state.markers[cat.key].forEach(m => m.addTo(map));
+    }
+  });
+  toast(state.useClusters ? 'Kluster aktiverat' : 'Kluster inaktiverat');
+});
+
+document.getElementById('burger-btn').addEventListener('click', () => {
+  document.getElementById('panel').classList.toggle('open');
+});
+
+// ── Toast / progress ─────────────────────────────────────────────────────────
+let toastTimer;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2800);
+}
+
+function setProgress(pct) {
+  document.getElementById('progress-bar').style.width = pct + '%';
+}
+
+// ── Load-area button ─────────────────────────────────────────────────────────
+const loadAreaBtn = document.getElementById('load-area-btn');
+loadAreaBtn.addEventListener('click', () => loadArea());
+
+// Show button after panning away from loaded area
+map.on('moveend', () => {
+  if (state.loading) return;
+  loadAreaBtn.style.display = 'block';
+});
+
+// ── Overpass fetch ───────────────────────────────────────────────────────────
+async function fetchOverpass(query) {
+  for (const endpoint of ENDPOINTS) {
+    try {
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        body: query,
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!resp.ok) continue;
+      return await resp.json();
+    } catch (_) { /* try next endpoint */ }
+  }
+  return null;
+}
+
+async function loadCategory(cat, bbox) {
+  const query = buildQuery(cat, bbox);
+  const data = await fetchOverpass(query);
+  if (!data || !data.elements) return;
+
+  const icon = makeIcon(cat.color);
+  let added = 0;
+  data.elements.forEach(elem => {
+    const uid = `${elem.type}/${elem.id}`;
+    if (state.seen[cat.key].has(uid)) return;   // already on map
+    state.seen[cat.key].add(uid);
+
+    const latlng = getLatLng(elem);
+    if (!latlng) return;
+
+    const marker = L.marker(latlng, { icon });
+    marker.bindPopup(buildPopup(elem, cat), { maxWidth: 260 });
+    state.markers[cat.key].push(marker);
+    state.counts[cat.key]++;
+    added++;
+
+    if (state.useClusters) state.clusters[cat.key].addLayer(marker);
+    else if (state.active.has(cat.key)) marker.addTo(map);
+  });
+
+  return added;
+}
+
+async function loadArea() {
+  if (state.loading) return;
+  state.loading = true;
+  loadAreaBtn.disabled = true;
+  loadAreaBtn.textContent = '⏳ Laddar…';
+
+  const bbox = bboxString();
+  state.loadedBbox = bbox;
+  setProgress(2);
+
+  let done = 0;
+  for (const cat of CATEGORIES) {
+    const added = await loadCategory(cat, bbox);
+    done++;
+    setProgress(Math.round((done / CATEGORIES.length) * 100));
+    updateStats();
+    if (added > 0) toast(`${cat.icon} ${cat.label}: +${added} nya`);
+    await new Promise(r => setTimeout(r, 600));
+  }
+
+  setProgress(100);
+  toast('✅ Område laddat!');
+  setTimeout(() => setProgress(0), 1500);
+
+  state.loading = false;
+  loadAreaBtn.disabled = false;
+  loadAreaBtn.textContent = '🔄 Ladda detta område';
+  loadAreaBtn.style.display = 'none';
+}
+
+// ── Startup: geolocation → load area ────────────────────────────────────────
+function startWithPosition(lat, lng) {
+  // Zoom to show roughly "half Västerbotten" — ~200 km across
+  map.setView([lat, lng], 9);
+
+  // Small marker for user position
+  L.circleMarker([lat, lng], {
+    radius: 8, color: '#e94560', fillColor: '#e94560',
+    fillOpacity: 0.9, weight: 2,
+  }).addTo(map).bindPopup('📍 Din position').openPopup();
+
+  // Wait for map to settle then load
+  setTimeout(() => loadArea(), 400);
+}
+
+buildChips();
+buildStats();
+
+if (navigator.geolocation) {
+  toast('📍 Hämtar din position…');
+  navigator.geolocation.getCurrentPosition(
+    pos => startWithPosition(pos.coords.latitude, pos.coords.longitude),
+    _err => {
+      toast('Plats ej tillgänglig – visar hela Sverige');
+      // Fall back: show Sweden overview, let user pan and click load
+      loadAreaBtn.style.display = 'block';
+    },
+    { timeout: 8000, maximumAge: 60000 }
+  );
+} else {
+  loadAreaBtn.style.display = 'block';
+}
+</script>
+</body>
+</html>
