@@ -565,52 +565,63 @@ function attachPopupAsync(marker, elem, cat, latlng, knownImgUrl) {
   const needsLink = cat.key === 'hist' && !hasStaticLink;
   if (!needsImg && !needsLink) return;
 
-  let enriched = false; // run only once per popup lifetime
+  // Cache resolved values so re-opens can re-inject without re-fetching
+  let cachedImgUrl = knownImgUrl || null;
+  let cachedLink   = null; // { href, label }
+  let fetching     = false;
+
+  function injectImg(url) {
+    const slot = document.getElementById(slotId);
+    if (!slot) return;
+    slot.innerHTML = `<img class="popup-img" src="${url}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/>`;
+    slot.style.display = '';
+    slot.onclick = () => openLightbox(url);
+    slot.style.cursor = 'zoom-in';
+  }
+
+  function injectLink(href, label) {
+    const slot = document.getElementById(linkSlotId);
+    if (slot) slot.innerHTML = `<a href="${href}" target="_blank">${label}</a>`;
+  }
+
+  function applyCache() {
+    if (cachedImgUrl)  injectImg(cachedImgUrl);
+    if (cachedLink)    injectLink(cachedLink.href, cachedLink.label);
+  }
 
   marker.on('popupopen', () => {
-    if (enriched) return;
-    enriched = true;
+    // Always re-inject cached values (DOM is fresh each open)
+    applyCache();
 
-    function injectImg(url) {
-      const slot = document.getElementById(slotId);
-      if (!slot || slot.children.length) return;
-      slot.innerHTML = `<img class="popup-img" src="${url}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/>`;
-      slot.style.display = '';
-      slot.onclick = () => openLightbox(url);
-      slot.style.cursor = 'zoom-in';
-    }
-
-    function injectLink(href, label) {
-      const slot = document.getElementById(linkSlotId);
-      if (slot) slot.innerHTML = `<a href="${href}" target="_blank">${label}</a>`;
-    }
+    if (fetching) return; // fetches already in flight or done
+    fetching = true;
 
     // Image chain: wikipedia tag → wikidata P18 → hist wikipedia lookup → commons name search
     if (needsImg) {
       if (tags.wikipedia) {
         const wp = tags.wikipedia.replace(/^sv:/, '');
-        wikipediaImage(wp, 'sv').then(url => { if (url) injectImg(url); });
+        wikipediaImage(wp, 'sv').then(url => { if (url) { cachedImgUrl = url; injectImg(url); } });
 
       } else if (tags.wikidata) {
-        wikidataImageUrl(tags.wikidata).then(url => { if (url) injectImg(url); });
+        wikidataImageUrl(tags.wikidata).then(url => { if (url) { cachedImgUrl = url; injectImg(url); } });
 
       } else if (cat.key === 'hist') {
         findHistWikipedia(tags, lat, lng).then(result => {
           if (!result) return;
-          if (needsLink) injectLink(result.href, result.label);
-          wikipediaImage(result.title, result.lang).then(url => { if (url) injectImg(url); });
+          if (needsLink) { cachedLink = { href: result.href, label: result.label }; injectLink(result.href, result.label); }
+          wikipediaImage(result.title, result.lang).then(url => { if (url) { cachedImgUrl = url; injectImg(url); } });
         });
         return; // link handled above for hist
 
       } else if (cat.key === 'foto' && name !== 'Namnlös') {
-        wikimediaCommonsSearch(name).then(url => { if (url) injectImg(url); });
+        wikimediaCommonsSearch(name).then(url => { if (url) { cachedImgUrl = url; injectImg(url); } });
       }
     }
 
     // Link chain (hist without static link, image already known)
     if (needsLink) {
       findHistWikipedia(tags, lat, lng).then(result => {
-        if (result) injectLink(result.href, result.label);
+        if (result) { cachedLink = { href: result.href, label: result.label }; injectLink(result.href, result.label); }
       });
     }
   });
