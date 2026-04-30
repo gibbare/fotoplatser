@@ -427,18 +427,16 @@ async function fetchMapillaryForBbox(bounds) {
   }
 }
 
-// Search Wikimedia Commons for an image by name (used for artworks without image tag)
-async function wikimediaCommonsSearch(name) {
+// Search Wikimedia Commons for geo-tagged images near a coordinate
+async function wikimediaCommonsSearch(lat, lng, radiusM = 300) {
   try {
-    const url = `https://commons.wikimedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(name)}&srnamespace=6&srlimit=3&format=json&origin=*`;
+    const url = `https://commons.wikimedia.org/w/api.php?action=query&list=geosearch&gsnamespace=6&gslat=${lat}&gslon=${lng}&gsradius=${radiusM}&gslimit=5&format=json&origin=*`;
     const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
     const data = await resp.json();
-    const hits = data.query?.search || [];
-    for (const hit of hits) {
-      // Only accept results where the article name is similar to our search
-      const title = hit.title.replace('File:', '');
-      return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(title)}?width=400`;
-    }
+    const hits = data.query?.geosearch || [];
+    if (!hits.length) return null;
+    const title = hits[0].title.replace('File:', '');
+    return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(title)}?width=400`;
   } catch (_) {}
   return null;
 }
@@ -607,14 +605,19 @@ function attachPopupAsync(marker, elem, cat, latlng, knownImgUrl) {
 
       } else if (cat.key === 'hist') {
         findHistWikipedia(tags, lat, lng).then(result => {
-          if (!result) return;
-          if (needsLink) { cachedLink = { href: result.href, label: result.label }; injectLink(result.href, result.label); }
-          wikipediaImage(result.title, result.lang).then(url => { if (url) { cachedImgUrl = url; injectImg(url); } });
+          if (needsLink && result) { cachedLink = { href: result.href, label: result.label }; injectLink(result.href, result.label); }
+          const imgPromise = result
+            ? wikipediaImage(result.title, result.lang)
+            : Promise.resolve(null);
+          imgPromise.then(url => {
+            if (url) { cachedImgUrl = url; injectImg(url); }
+            else wikimediaCommonsSearch(lat, lng).then(u => { if (u) { cachedImgUrl = u; injectImg(u); } });
+          });
         });
         return; // link handled above for hist
 
-      } else if (cat.key === 'foto' && name !== 'Namnlös') {
-        wikimediaCommonsSearch(name).then(url => { if (url) { cachedImgUrl = url; injectImg(url); } });
+      } else {
+        wikimediaCommonsSearch(lat, lng).then(url => { if (url) { cachedImgUrl = url; injectImg(url); } });
       }
     }
 
