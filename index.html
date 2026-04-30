@@ -785,6 +785,14 @@ async function loadCategory(cat, bbox) {
     if (!latlng) return;
 
     const tags = elem.tags || {};
+
+    // Skip foto-markers with no useful data — they clutter the map
+    if (cat.key === 'foto') {
+      const hasName = !!(tags.name || tags['name:sv']);
+      const hasMedia = !!(tags.image || tags.wikimedia_commons || tags.wikidata || tags.wikipedia || tags.website || tags.url);
+      if (!hasName && !hasMedia) { state.seen[cat.key].delete(uid); return; }
+    }
+
     const [lat, lng] = latlng;
     const imgUrl = osmImageUrl(tags) || nearestMapillary(lat, lng);
     const icon = makeIcon(cat.color, !!imgUrl);
