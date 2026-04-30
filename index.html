@@ -342,6 +342,8 @@ const state = {
 const map = L.map('map', { zoomControl: true }).setView([62.5, 17], 5);
 TILE_LAYERS.topo.addTo(map);
 
+const MAPILLARY_TOKEN = 'MLY|35286869720929007|8b25a5a96d3b9dfa3b4aac8351e041cf';
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function makeIcon(color) {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
@@ -350,32 +352,32 @@ function makeIcon(color) {
   return L.divIcon({ html: svg, className: '', iconSize: [22,22], iconAnchor: [11,11], popupAnchor: [0,-12] });
 }
 
-function resolveImageUrl(tags) {
-  // Direct image URL
+function osmImageUrl(tags) {
   if (tags.image && tags.image.startsWith('http')) return tags.image;
-
-  // Wikimedia Commons: "File:Foo.jpg" or full commons URL
   if (tags.wikimedia_commons) {
     let file = tags.wikimedia_commons;
-    // Strip prefix if full URL like https://commons.wikimedia.org/wiki/File:Foo.jpg
     const m = file.match(/File:(.+)$/);
     if (m) file = m[1];
     return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file)}?width=400`;
   }
-
-  // Wikipedia article → try to get the lead image via REST API (async, skip for now)
   return null;
 }
 
-function buildPopup(elem, cat) {
+async function mapillaryImageUrl(lng, lat) {
+  try {
+    const url = `https://graph.mapillary.com/images?fields=id,thumb_1024_url&closeto=${lng},${lat}&radius=200&limit=1&access_token=${MAPILLARY_TOKEN}`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data.data?.[0]?.thumb_1024_url || null;
+  } catch (_) { return null; }
+}
+
+function buildPopup(elem, cat, latlng) {
   const tags = elem.tags || {};
   const name = tags.name || tags['name:sv'] || 'Namnlös';
   const osmType = elem.type === 'relation' ? 'relation' : elem.type === 'way' ? 'way' : 'node';
-
-  const imgUrl = resolveImageUrl(tags);
-  const imgHtml = imgUrl
-    ? `<div class="popup-img-wrap"><img class="popup-img" src="${imgUrl}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/></div>`
-    : '';
+  const popupId = `popup-${elem.type}-${elem.id}`;
 
   // Best external link: Wikipedia > website > OSM
   let linkHtml;
@@ -388,7 +390,24 @@ function buildPopup(elem, cat) {
     linkHtml = `<a href="https://www.openstreetmap.org/${osmType}/${elem.id}" target="_blank">🗺 Visa på karta</a>`;
   }
 
-  return `${imgHtml}
+  const staticImg = osmImageUrl(tags);
+  const imgSlot = staticImg
+    ? `<div class="popup-img-wrap"><img class="popup-img" src="${staticImg}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/></div>`
+    : `<div class="popup-img-wrap" id="${popupId}-img" style="display:none"></div>`;
+
+  // If no OSM image, fetch Mapillary asynchronously and inject when ready
+  if (!staticImg) {
+    const [lat, lng] = latlng;
+    mapillaryImageUrl(lng, lat).then(imgUrl => {
+      if (!imgUrl) return;
+      const slot = document.getElementById(`${popupId}-img`);
+      if (!slot) return;
+      slot.innerHTML = `<img class="popup-img" src="${imgUrl}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/>`;
+      slot.style.display = '';
+    });
+  }
+
+  return `${imgSlot}
     <div class="popup-name">${cat.icon} ${name}</div>
     <div class="popup-type">${cat.label}</div>
     <div class="popup-osm">${linkHtml}</div>`;
@@ -580,7 +599,7 @@ async function loadCategory(cat, bbox) {
     if (!latlng) return;
 
     const marker = L.marker(latlng, { icon });
-    marker.bindPopup(buildPopup(elem, cat), { maxWidth: 260 });
+    marker.bindPopup(buildPopup(elem, cat, latlng), { maxWidth: 260 });
     state.markers[cat.key].push(marker);
     state.counts[cat.key]++;
     added++;
