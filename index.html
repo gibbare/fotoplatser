@@ -150,15 +150,27 @@
   .leaflet-popup-content-wrapper { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); }
   .leaflet-popup-tip { background: var(--panel); }
   .leaflet-popup-content { margin: 12px 14px; }
-  .popup-img-wrap { margin: -12px -14px 10px; border-radius: var(--radius) var(--radius) 0 0; overflow: hidden; max-height: 160px; }
-  .popup-img { width: 100%; height: 160px; object-fit: cover; display: block; }
+  .popup-img-wrap { margin: -12px -14px 10px; border-radius: var(--radius) var(--radius) 0 0; overflow: hidden; max-height: 160px; cursor: zoom-in; }
+  .popup-img { width: 100%; height: 160px; object-fit: cover; display: block; transition: opacity .2s; }
+  .popup-img:hover { opacity: .88; }
   .popup-name { font-weight: 600; margin-bottom: 2px; }
   .popup-type { font-size: .75rem; color: var(--muted); margin-bottom: 8px; }
-  .popup-desc { font-size: .8rem; color: var(--muted); margin-bottom: 6px; }
-  .popup-tag { display: inline-block; background: var(--card); padding: 2px 6px; border-radius: 4px; font-size: .75rem; margin: 2px 2px 0 0; }
   .popup-osm { font-size: .75rem; color: var(--muted); margin-top: 6px; display: flex; gap: 10px; }
-  .popup-osm a, .popup-wiki { color: #70b0ff; text-decoration: none; }
-  .popup-wiki:hover, .popup-osm a:hover { text-decoration: underline; }
+  .popup-osm a { color: #70b0ff; text-decoration: none; }
+  .popup-osm a:hover { text-decoration: underline; }
+
+  /* Lightbox */
+  #lightbox {
+    display: none;
+    position: fixed; inset: 0; z-index: 99999;
+    background: rgba(0,0,0,.92);
+    align-items: center; justify-content: center;
+    cursor: zoom-out;
+  }
+  #lightbox.open { display: flex; }
+  #lightbox img { max-width: 94vw; max-height: 92vh; object-fit: contain; border-radius: var(--radius); box-shadow: 0 4px 40px rgba(0,0,0,.6); }
+  #lightbox-close { position: absolute; top: 16px; right: 20px; font-size: 2rem; color: #fff; cursor: pointer; line-height: 1; background: none; border: none; opacity: .7; }
+  #lightbox-close:hover { opacity: 1; }
 
   @media (max-width: 600px) {
     /* Ensure the whole app fits within the phone screen */
@@ -231,6 +243,11 @@
 </div>
 
 <div id="toast"></div>
+
+<div id="lightbox">
+  <button id="lightbox-close">✕</button>
+  <img id="lightbox-img" src="" alt=""/>
+</div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
@@ -345,9 +362,13 @@ TILE_LAYERS.topo.addTo(map);
 const MAPILLARY_TOKEN = 'MLY|35286869720929007|8b25a5a96d3b9dfa3b4aac8351e041cf';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-function makeIcon(color) {
+function makeIcon(color, hasImage = false) {
+  const badge = hasImage
+    ? `<text x="11" y="15" text-anchor="middle" font-size="8" font-weight="900" fill="#1a1a2e" font-family="sans-serif">B</text>`
+    : '';
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 22 22">
     <circle cx="11" cy="11" r="9" fill="${color}" stroke="#fff" stroke-width="2"/>
+    ${badge}
   </svg>`;
   return L.divIcon({ html: svg, className: '', iconSize: [22,22], iconAnchor: [11,11], popupAnchor: [0,-12] });
 }
@@ -363,6 +384,18 @@ function osmImageUrl(tags) {
   return null;
 }
 
+async function wikidataImageUrl(wikidataId) {
+  try {
+    const url = `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${wikidataId}&props=claims&format=json&origin=*`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    const p18 = data.entities?.[wikidataId]?.claims?.P18?.[0]?.mainsnak?.datavalue?.value;
+    if (!p18) return null;
+    return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(p18)}?width=400`;
+  } catch (_) { return null; }
+}
+
 async function mapillaryImageUrl(lng, lat) {
   try {
     const url = `https://graph.mapillary.com/images?fields=id,thumb_1024_url&closeto=${lng},${lat}&radius=200&limit=1&access_token=${MAPILLARY_TOKEN}`;
@@ -371,6 +404,15 @@ async function mapillaryImageUrl(lng, lat) {
     const data = await resp.json();
     return data.data?.[0]?.thumb_1024_url || null;
   } catch (_) { return null; }
+}
+
+function imgWrap(imgUrl, name, slotId = null) {
+  if (imgUrl) {
+    return `<div class="popup-img-wrap" onclick="openLightbox('${imgUrl.replace(/'/g,"\\'")}')">
+      <img class="popup-img" src="${imgUrl}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/>
+    </div>`;
+  }
+  return `<div class="popup-img-wrap" id="${slotId}" style="display:none"></div>`;
 }
 
 function buildPopup(elem, cat, latlng) {
@@ -391,27 +433,44 @@ function buildPopup(elem, cat, latlng) {
   }
 
   const staticImg = osmImageUrl(tags);
-  const imgSlot = staticImg
-    ? `<div class="popup-img-wrap"><img class="popup-img" src="${staticImg}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/></div>`
-    : `<div class="popup-img-wrap" id="${popupId}-img" style="display:none"></div>`;
+  const slotId = `${popupId}-img`;
 
-  // If no OSM image, fetch Mapillary asynchronously and inject when ready
+  // Async image fetch: Wikidata first, then Mapillary as last resort
   if (!staticImg) {
     const [lat, lng] = latlng;
-    mapillaryImageUrl(lng, lat).then(imgUrl => {
+    const tryAsync = tags.wikidata
+      ? wikidataImageUrl(tags.wikidata)
+      : Promise.resolve(null);
+
+    tryAsync.then(url => url || mapillaryImageUrl(lng, lat)).then(imgUrl => {
       if (!imgUrl) return;
-      const slot = document.getElementById(`${popupId}-img`);
+      const slot = document.getElementById(slotId);
       if (!slot) return;
       slot.innerHTML = `<img class="popup-img" src="${imgUrl}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/>`;
       slot.style.display = '';
+      slot.onclick = () => openLightbox(imgUrl);
+      slot.style.cursor = 'zoom-in';
     });
   }
 
-  return `${imgSlot}
+  return `${imgWrap(staticImg, name, slotId)}
     <div class="popup-name">${cat.icon} ${name}</div>
     <div class="popup-type">${cat.label}</div>
     <div class="popup-osm">${linkHtml}</div>`;
 }
+
+// ── Lightbox ─────────────────────────────────────────────────────────────────
+function openLightbox(src) {
+  document.getElementById('lightbox-img').src = src;
+  document.getElementById('lightbox').classList.add('open');
+}
+function closeLightbox() {
+  document.getElementById('lightbox').classList.remove('open');
+  document.getElementById('lightbox-img').src = '';
+}
+document.getElementById('lightbox').addEventListener('click', closeLightbox);
+document.getElementById('lightbox-close').addEventListener('click', e => { e.stopPropagation(); closeLightbox(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
 
 function getLatLng(elem) {
   if (elem.type === 'node') return [elem.lat, elem.lon];
@@ -588,7 +647,6 @@ async function loadCategory(cat, bbox) {
   const data = await fetchOverpass(query);
   if (!data || !data.elements) return;
 
-  const icon = makeIcon(cat.color);
   let added = 0;
   data.elements.forEach(elem => {
     const uid = `${elem.type}/${elem.id}`;
@@ -597,6 +655,10 @@ async function loadCategory(cat, bbox) {
 
     const latlng = getLatLng(elem);
     if (!latlng) return;
+
+    const tags = elem.tags || {};
+    const hasImage = !!(osmImageUrl(tags) || tags.wikidata || tags.wikimedia_commons);
+    const icon = makeIcon(cat.color, hasImage);
 
     const marker = L.marker(latlng, { icon });
     marker.bindPopup(buildPopup(elem, cat, latlng), { maxWidth: 260 });
