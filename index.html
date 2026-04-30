@@ -598,7 +598,10 @@ document.getElementById('cluster-toggle').addEventListener('change', e => {
 });
 
 document.getElementById('burger-btn').addEventListener('click', () => {
-  document.getElementById('panel').classList.toggle('open');
+  const panel = document.getElementById('panel');
+  panel.classList.toggle('open');
+  const zoomEl = document.querySelector('.leaflet-control-zoom');
+  if (zoomEl) zoomEl.style.visibility = panel.classList.contains('open') ? 'hidden' : '';
 });
 
 // ── Toast / progress ─────────────────────────────────────────────────────────
