@@ -341,7 +341,7 @@ const TILE_LAYERS = {
 
 // ── State ────────────────────────────────────────────────────────────────────
 const state = {
-  active: new Set(CATEGORIES.map(c => c.key)),
+  active: new Set(['hist', 'foto']),
   counts: {},
   seen: {},
   markers: {},
@@ -438,27 +438,40 @@ function imgWrap(imgUrl, name, slotId = null) {
 }
 
 // Find Wikipedia link for hist markers without an explicit wikipedia tag.
-// Priority: Wikidata sitelinks → Swedish Wikipedia geosearch → English geosearch.
+// Priority: Wikidata sitelinks → sv geosearch 2km → en geosearch 2km → sv name search
 async function findHistWikipedia(tags, lat, lng) {
+  // 1. Wikidata sitelinks — most precise
   if (tags.wikidata) {
     try {
       const url = `https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${tags.wikidata}&props=sitelinks&format=json&origin=*`;
       const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
       const data = await resp.json();
       const links = data.entities?.[tags.wikidata]?.sitelinks;
-      if (links?.svwiki) return { href: `https://sv.wikipedia.org/wiki/${encodeURIComponent(links.svwiki.title)}`, label: '📖 Wikipedia (sv)' };
+      if (links?.svwiki) return { href: `https://sv.wikipedia.org/wiki/${encodeURIComponent(links.svwiki.title)}`, label: '📖 Wikipedia' };
       if (links?.enwiki) return { href: `https://en.wikipedia.org/wiki/${encodeURIComponent(links.enwiki.title)}`, label: '📖 Wikipedia (en)' };
     } catch (_) {}
   }
 
-  // Geosearch within 500 m on Swedish Wikipedia
+  // 2. Swedish Wikipedia geosearch within 2 km
   try {
-    const url = `https://sv.wikipedia.org/w/api.php?action=query&list=geosearch&gscoord=${lat}|${lng}&gsradius=500&gslimit=1&format=json&origin=*`;
+    const url = `https://sv.wikipedia.org/w/api.php?action=query&list=geosearch&gscoord=${lat}|${lng}&gsradius=2000&gslimit=1&format=json&origin=*`;
     const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
     const data = await resp.json();
     const hit = data.query?.geosearch?.[0];
     if (hit) return { href: `https://sv.wikipedia.org/wiki/${encodeURIComponent(hit.title)}`, label: '📖 Wikipedia' };
   } catch (_) {}
+
+  // 3. Swedish Wikipedia text search on place name
+  const name = tags.name || tags['name:sv'];
+  if (name) {
+    try {
+      const url = `https://sv.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(name)}&srnamespace=0&srlimit=1&format=json&origin=*`;
+      const resp = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      const data = await resp.json();
+      const hit = data.query?.search?.[0];
+      if (hit) return { href: `https://sv.wikipedia.org/wiki/${encodeURIComponent(hit.title)}`, label: '📖 Wikipedia' };
+    } catch (_) {}
+  }
 
   return null;
 }
@@ -567,7 +580,7 @@ CATEGORIES.forEach(cat => {
   state.seen[cat.key] = new Set();
   state.markers[cat.key] = [];
   state.clusters[cat.key] = createClusterGroup(cat);
-  if (state.useClusters) state.clusters[cat.key].addTo(map);
+  if (state.useClusters && state.active.has(cat.key)) state.clusters[cat.key].addTo(map);
 });
 
 // ── UI builders ──────────────────────────────────────────────────────────────
@@ -575,7 +588,8 @@ function buildChips() {
   const container = document.getElementById('chips');
   CATEGORIES.forEach(cat => {
     const chip = document.createElement('button');
-    chip.className = 'chip active';
+    const isActive = state.active.has(cat.key);
+    chip.className = isActive ? 'chip active' : 'chip';
     chip.dataset.key = cat.key;
     chip.style.color = cat.color;
     chip.innerHTML = `<span class="dot" style="background:${cat.color}"></span>${cat.icon} ${cat.label}`;
