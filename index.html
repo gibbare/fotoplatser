@@ -520,15 +520,15 @@ async function findHistWikipedia(tags, lat, lng) {
   return null;
 }
 
-// knownImgUrl: already resolved image (OSM/Wikidata/Mapillary), or null
-function buildPopup(elem, cat, latlng, knownImgUrl) {
+// Returns static popup HTML. Async enrichment (images, links) is wired up
+// via marker.on('popupopen') in attachPopupAsync() — NOT here, because the
+// DOM elements don't exist until the popup is actually opened.
+function buildPopupHtml(elem, cat, knownImgUrl) {
   const tags = elem.tags || {};
   const name = tags.name || tags['name:sv'] || 'Namnlös';
   const slotId = `popup-${elem.type}-${elem.id}-img`;
   const linkSlotId = `popup-${elem.type}-${elem.id}-link`;
-  const [lat, lng] = latlng;
 
-  // Known static link from OSM tags
   let linkHtml = '';
   if (tags.wikipedia) {
     const wp = tags.wikipedia.replace(/^sv:/, '');
@@ -537,57 +537,83 @@ function buildPopup(elem, cat, latlng, knownImgUrl) {
     linkHtml = `<a href="${tags.website || tags.url}" target="_blank">🌐 Webbplats</a>`;
   }
 
-  // Inject image into the slot div
-  function injectImg(imgUrl) {
-    const slot = document.getElementById(slotId);
-    if (!slot || slot.children.length) return; // already filled
-    slot.innerHTML = `<img class="popup-img" src="${imgUrl}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/>`;
-    slot.style.display = '';
-    slot.onclick = () => openLightbox(imgUrl);
-    slot.style.cursor = 'zoom-in';
-  }
-
-  // If wikipedia tag present: fetch REST thumbnail immediately
-  if (!knownImgUrl && tags.wikipedia) {
-    const wpTitle = tags.wikipedia.replace(/^sv:/, '');
-    wikipediaImage(wpTitle, 'sv').then(imgUrl => { if (imgUrl) injectImg(imgUrl); });
-  }
-
-  // For hist without link: find Wikipedia link + its thumbnail
-  const needsWikiLookup = cat.key === 'hist' && !linkHtml;
-  if (needsWikiLookup) {
-    findHistWikipedia(tags, lat, lng).then(result => {
-      if (!result) return;
-      const linkSlot = document.getElementById(linkSlotId);
-      if (linkSlot) linkSlot.innerHTML = `<a href="${result.href}" target="_blank">${result.label}</a>`;
-      // Also try to get the Wikipedia thumbnail if we still have no image
-      if (!knownImgUrl) {
-        wikipediaImage(result.title, result.lang).then(imgUrl => { if (imgUrl) injectImg(imgUrl); });
-      }
-    });
-  }
-
-  // Async image fallback chain (only if no known image and no wikipedia tag handled above)
-  if (!knownImgUrl && !tags.wikipedia) {
-    const asyncImg = tags.wikidata
-      ? wikidataImageUrl(tags.wikidata)
-      : (cat.key === 'foto' && name !== 'Namnlös')
-        ? wikimediaCommonsSearch(name)
-        : Promise.resolve(null);
-
-    asyncImg.then(imgUrl => { if (imgUrl) injectImg(imgUrl); });
-  }
+  const needsLinkSlot = cat.key === 'hist' && !linkHtml;
 
   const linkRow = linkHtml
     ? `<div class="popup-osm">${linkHtml}</div>`
-    : needsWikiLookup
-      ? `<div class="popup-osm" id="${linkSlotId}"></div>`
-      : '';
+    : needsLinkSlot ? `<div class="popup-osm" id="${linkSlotId}"></div>`
+    : '';
 
   return `${imgWrap(knownImgUrl, name, slotId)}
     <div class="popup-name">${cat.icon} ${name}</div>
     <div class="popup-type">${cat.label}</div>
     ${linkRow}`;
+}
+
+// Called once per marker. Registers a popupopen handler that runs async
+// lookups exactly when the popup DOM is live.
+function attachPopupAsync(marker, elem, cat, latlng, knownImgUrl) {
+  const tags = elem.tags || {};
+  const name = tags.name || tags['name:sv'] || 'Namnlös';
+  const slotId = `popup-${elem.type}-${elem.id}-img`;
+  const linkSlotId = `popup-${elem.type}-${elem.id}-link`;
+  const [lat, lng] = latlng;
+
+  // Nothing async needed if image already known and link already in HTML
+  const hasStaticLink = !!(tags.wikipedia || tags.website || tags.url);
+  const needsImg  = !knownImgUrl;
+  const needsLink = cat.key === 'hist' && !hasStaticLink;
+  if (!needsImg && !needsLink) return;
+
+  let enriched = false; // run only once per popup lifetime
+
+  marker.on('popupopen', () => {
+    if (enriched) return;
+    enriched = true;
+
+    function injectImg(url) {
+      const slot = document.getElementById(slotId);
+      if (!slot || slot.children.length) return;
+      slot.innerHTML = `<img class="popup-img" src="${url}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/>`;
+      slot.style.display = '';
+      slot.onclick = () => openLightbox(url);
+      slot.style.cursor = 'zoom-in';
+    }
+
+    function injectLink(href, label) {
+      const slot = document.getElementById(linkSlotId);
+      if (slot) slot.innerHTML = `<a href="${href}" target="_blank">${label}</a>`;
+    }
+
+    // Image chain: wikipedia tag → wikidata P18 → hist wikipedia lookup → commons name search
+    if (needsImg) {
+      if (tags.wikipedia) {
+        const wp = tags.wikipedia.replace(/^sv:/, '');
+        wikipediaImage(wp, 'sv').then(url => { if (url) injectImg(url); });
+
+      } else if (tags.wikidata) {
+        wikidataImageUrl(tags.wikidata).then(url => { if (url) injectImg(url); });
+
+      } else if (cat.key === 'hist') {
+        findHistWikipedia(tags, lat, lng).then(result => {
+          if (!result) return;
+          if (needsLink) injectLink(result.href, result.label);
+          wikipediaImage(result.title, result.lang).then(url => { if (url) injectImg(url); });
+        });
+        return; // link handled above for hist
+
+      } else if (cat.key === 'foto' && name !== 'Namnlös') {
+        wikimediaCommonsSearch(name).then(url => { if (url) injectImg(url); });
+      }
+    }
+
+    // Link chain (hist without static link, image already known)
+    if (needsLink) {
+      findHistWikipedia(tags, lat, lng).then(result => {
+        if (result) injectLink(result.href, result.label);
+      });
+    }
+  });
 }
 
 // ── Lightbox ─────────────────────────────────────────────────────────────────
@@ -826,7 +852,8 @@ async function loadCategory(cat, bbox) {
     const icon = makeIcon(cat.color, !!imgUrl);
 
     const marker = L.marker(latlng, { icon });
-    marker.bindPopup(buildPopup(elem, cat, latlng, imgUrl), { maxWidth: 260 });
+    marker.bindPopup(buildPopupHtml(elem, cat, imgUrl), { maxWidth: 260 });
+    attachPopupAsync(marker, elem, cat, latlng, imgUrl);
     state.markers[cat.key].push(marker);
     state.counts[cat.key]++;
     added++;
@@ -887,7 +914,8 @@ async function loadArea() {
       const markerIcon = makeIcon(cat.color, !!imgUrl);
 
       const marker = L.marker(latlng, { icon: markerIcon });
-      marker.bindPopup(buildPopup(elem, cat, latlng, imgUrl), { maxWidth: 260 });
+      marker.bindPopup(buildPopupHtml(elem, cat, imgUrl), { maxWidth: 260 });
+      attachPopupAsync(marker, elem, cat, latlng, imgUrl);
       state.markers[cat.key].push(marker);
       state.counts[cat.key]++;
 
