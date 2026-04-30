@@ -420,15 +420,13 @@ function buildPopup(elem, cat, latlng) {
   const osmType = elem.type === 'relation' ? 'relation' : elem.type === 'way' ? 'way' : 'node';
   const popupId = `popup-${elem.type}-${elem.id}`;
 
-  // Best external link: Wikipedia > website > OSM
-  let linkHtml;
+  // Best external link: Wikipedia > website > nothing
+  let linkHtml = '';
   if (tags.wikipedia) {
     const wp = tags.wikipedia.replace(/^sv:/, '');
     linkHtml = `<a href="https://sv.wikipedia.org/wiki/${encodeURIComponent(wp)}" target="_blank">📖 Läs mer</a>`;
   } else if (tags.website || tags.url) {
     linkHtml = `<a href="${tags.website || tags.url}" target="_blank">🌐 Webbplats</a>`;
-  } else {
-    linkHtml = `<a href="https://www.openstreetmap.org/${osmType}/${elem.id}" target="_blank">🗺 Visa på karta</a>`;
   }
 
   const staticImg = osmImageUrl(tags);
@@ -659,7 +657,8 @@ async function loadCategory(cat, bbox) {
     if (!latlng) return;
 
     const tags = elem.tags || {};
-    const hasImage = !!(osmImageUrl(tags) || tags.wikidata || tags.wikimedia_commons);
+    // Only badge when we know for certain an image exists (not speculatively for wikidata)
+    const hasImage = !!osmImageUrl(tags);
     const icon = makeIcon(cat.color, hasImage);
 
     const marker = L.marker(latlng, { icon });
