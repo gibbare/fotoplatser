@@ -157,8 +157,13 @@
   .leaflet-popup-tip { background: var(--panel); }
   .leaflet-popup-content { margin: 12px 14px; }
   .popup-img-wrap { margin: -12px -14px 10px; border-radius: var(--radius) var(--radius) 0 0; overflow: hidden; max-height: 160px; cursor: zoom-in; }
+  .popup-gallery { margin: -12px -14px 10px; border-radius: var(--radius) var(--radius) 0 0; overflow: hidden; }
   .popup-img { width: 100%; height: 160px; object-fit: cover; display: block; transition: opacity .2s; }
   .popup-img:hover { opacity: .88; }
+  .gallery-nav { display: flex; align-items: center; justify-content: space-between; background: rgba(0,0,0,.5); padding: 4px 8px; }
+  .gallery-nav button { background: none; border: none; color: #fff; font-size: 1.1rem; cursor: pointer; padding: 0 6px; }
+  .gallery-nav button:hover { color: #f0d080; }
+  .gallery-counter { color: #fff; font-size: .75rem; }
   .popup-name { font-weight: 600; margin-bottom: 2px; }
   .popup-type { font-size: .75rem; color: var(--muted); margin-bottom: 8px; }
   .popup-osm { font-size: .75rem; color: var(--muted); margin-top: 6px; display: flex; gap: 10px; }
@@ -383,17 +388,23 @@ function makeIcon(color, hasImage = false) {
   return L.divIcon({ html: svg, className: '', iconSize: [22,22], iconAnchor: [11,11], popupAnchor: [0,-12] });
 }
 
-function osmImageUrl(tags) {
-  for (const key of ['image', 'image:0', 'image:1', 'photo_url', 'contact:image']) {
-    if (tags[key] && tags[key].startsWith('http')) return tags[key];
+function osmImageUrls(tags) {
+  const urls = [];
+  for (const key of ['image', 'image:0', 'image:1', 'image:2', 'image:3', 'photo_url', 'contact:image']) {
+    if (tags[key] && tags[key].startsWith('http')) urls.push(tags[key]);
   }
   if (tags.wikimedia_commons) {
     let file = tags.wikimedia_commons;
     const m = file.match(/File:(.+)$/);
     if (m) file = m[1];
-    return `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file)}?width=400`;
+    urls.push(`https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(file)}?width=400`);
   }
-  return null;
+  return urls;
+}
+
+function osmImageUrl(tags) {
+  const urls = osmImageUrls(tags);
+  return urls.length ? urls[0] : null;
 }
 
 async function wikidataImageUrl(wikidataId) {
@@ -464,13 +475,49 @@ function nearestMapillary(lat, lng, radiusM = 200) {
   return best;
 }
 
-function imgWrap(imgUrl, name, slotId = null) {
-  if (imgUrl) {
-    return `<div class="popup-img-wrap" onclick="openLightbox('${imgUrl.replace(/'/g,"\\'")}')">
-      <img class="popup-img" src="${imgUrl}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/>
+function galleryHtml(urls, name, slotId = null) {
+  if (!urls || !urls.length) {
+    return `<div class="popup-img-wrap" id="${slotId}" style="display:none"></div>`;
+  }
+  const id = slotId || `gallery-${Math.random().toString(36).slice(2)}`;
+  const urlsJson = JSON.stringify(urls).replace(/"/g, '&quot;');
+  if (urls.length === 1) {
+    const u = urls[0].replace(/'/g, "\\'");
+    return `<div class="popup-img-wrap" id="${id}" onclick="openLightbox('${u}')" style="cursor:zoom-in">
+      <img class="popup-img" src="${urls[0]}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/>
     </div>`;
   }
-  return `<div class="popup-img-wrap" id="${slotId}" style="display:none"></div>`;
+  return `<div class="popup-gallery" id="${id}" data-urls="${urlsJson}" data-idx="0">
+    <img class="popup-img" src="${urls[0]}" alt="${name}" loading="lazy" onerror="this.src=''" onclick="openLightbox(this.src)" style="cursor:zoom-in"/>
+    <div class="gallery-nav">
+      <button onclick="galleryPrev('${id}')">&#8592;</button>
+      <span class="gallery-counter">1 / ${urls.length}</span>
+      <button onclick="galleryNext('${id}')">&#8594;</button>
+    </div>
+  </div>`;
+}
+
+function galleryPrev(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const urls = JSON.parse(el.dataset.urls);
+  let idx = (parseInt(el.dataset.idx) - 1 + urls.length) % urls.length;
+  el.dataset.idx = idx;
+  el.querySelector('img').src = urls[idx];
+  el.querySelector('.gallery-counter').textContent = `${idx+1} / ${urls.length}`;
+}
+function galleryNext(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const urls = JSON.parse(el.dataset.urls);
+  let idx = (parseInt(el.dataset.idx) + 1) % urls.length;
+  el.dataset.idx = idx;
+  el.querySelector('img').src = urls[idx];
+  el.querySelector('.gallery-counter').textContent = `${idx+1} / ${urls.length}`;
+}
+
+function imgWrap(imgUrl, name, slotId = null) {
+  return galleryHtml(imgUrl ? [imgUrl] : [], name, slotId);
 }
 
 // Fetch thumbnail and link from Wikipedia REST summary API
@@ -527,11 +574,12 @@ async function findHistWikipedia(tags, lat, lng) {
 // Returns static popup HTML. Async enrichment (images, links) is wired up
 // via marker.on('popupopen') in attachPopupAsync() — NOT here, because the
 // DOM elements don't exist until the popup is actually opened.
-function buildPopupHtml(elem, cat, knownImgUrl) {
+function buildPopupHtml(elem, cat, knownImgUrls) {
   const tags = elem.tags || {};
   const name = tags.name || tags['name:sv'] || 'Namnlös';
   const slotId = `popup-${elem.type}-${elem.id}-img`;
   const linkSlotId = `popup-${elem.type}-${elem.id}-link`;
+  const urls = Array.isArray(knownImgUrls) ? knownImgUrls : (knownImgUrls ? [knownImgUrls] : []);
 
   let linkHtml = '';
   if (tags.wikipedia) {
@@ -548,7 +596,7 @@ function buildPopupHtml(elem, cat, knownImgUrl) {
     : needsLinkSlot ? `<div class="popup-osm" id="${linkSlotId}"></div>`
     : '';
 
-  return `${imgWrap(knownImgUrl, name, slotId)}
+  return `${galleryHtml(urls, name, slotId)}
     <div class="popup-name">${cat.icon} ${name}</div>
     <div class="popup-type">${cat.label}</div>
     ${linkRow}`;
@@ -556,31 +604,30 @@ function buildPopupHtml(elem, cat, knownImgUrl) {
 
 // Called once per marker. Registers a popupopen handler that runs async
 // lookups exactly when the popup DOM is live.
-function attachPopupAsync(marker, elem, cat, latlng, knownImgUrl) {
+function attachPopupAsync(marker, elem, cat, latlng, knownImgUrls) {
   const tags = elem.tags || {};
   const name = tags.name || tags['name:sv'] || 'Namnlös';
   const slotId = `popup-${elem.type}-${elem.id}-img`;
   const linkSlotId = `popup-${elem.type}-${elem.id}-link`;
   const [lat, lng] = latlng;
 
-  // Nothing async needed if image already known and link already in HTML
   const hasStaticLink = !!(tags.wikipedia || tags.website || tags.url);
-  const needsImg  = !knownImgUrl;
+  const knownUrls = Array.isArray(knownImgUrls) ? knownImgUrls : (knownImgUrls ? [knownImgUrls] : []);
+  const needsImg  = knownUrls.length === 0;
   const needsLink = cat.key === 'hist' && !hasStaticLink;
   if (!needsImg && !needsLink) return;
 
-  // Cache resolved values so re-opens can re-inject without re-fetching
-  let cachedImgUrl = knownImgUrl || null;
-  let cachedLink   = null; // { href, label }
-  let fetching     = false;
+  let cachedUrls = [...knownUrls];
+  let cachedLink = null;
+  let fetching   = false;
 
-  function injectImg(url) {
+  function injectGallery(urls) {
     const slot = document.getElementById(slotId);
     if (!slot) return;
-    slot.innerHTML = `<img class="popup-img" src="${url}" alt="${name}" loading="lazy" onerror="this.parentElement.style.display='none'"/>`;
-    slot.style.display = '';
-    slot.onclick = () => openLightbox(url);
-    slot.style.cursor = 'zoom-in';
+    const newEl = document.createElement('div');
+    newEl.innerHTML = galleryHtml(urls, name, slotId);
+    const gallery = newEl.firstElementChild;
+    slot.replaceWith(gallery);
   }
 
   function injectLink(href, label) {
@@ -589,45 +636,45 @@ function attachPopupAsync(marker, elem, cat, latlng, knownImgUrl) {
   }
 
   function applyCache() {
-    if (cachedImgUrl)  injectImg(cachedImgUrl);
-    if (cachedLink)    injectLink(cachedLink.href, cachedLink.label);
+    if (cachedUrls.length) injectGallery(cachedUrls);
+    if (cachedLink) injectLink(cachedLink.href, cachedLink.label);
   }
 
   marker.on('popupopen', () => {
-    // Always re-inject cached values (DOM is fresh each open)
     applyCache();
-
-    if (fetching) return; // fetches already in flight or done
+    if (fetching) return;
     fetching = true;
 
-    // Image chain: wikipedia tag → wikidata P18 → hist wikipedia lookup → commons name search
+    function addImg(url) {
+      if (!url || cachedUrls.includes(url)) return;
+      cachedUrls.push(url);
+      injectGallery(cachedUrls);
+    }
+
     if (needsImg) {
       if (tags.wikipedia) {
         const wp = tags.wikipedia.replace(/^sv:/, '');
-        wikipediaImage(wp, 'sv').then(url => { if (url) { cachedImgUrl = url; injectImg(url); } });
+        wikipediaImage(wp, 'sv').then(addImg);
 
       } else if (tags.wikidata) {
-        wikidataImageUrl(tags.wikidata).then(url => { if (url) { cachedImgUrl = url; injectImg(url); } });
+        wikidataImageUrl(tags.wikidata).then(addImg);
 
       } else if (cat.key === 'hist') {
         findHistWikipedia(tags, lat, lng).then(result => {
           if (needsLink && result) { cachedLink = { href: result.href, label: result.label }; injectLink(result.href, result.label); }
-          const imgPromise = result
-            ? wikipediaImage(result.title, result.lang)
-            : Promise.resolve(null);
+          const imgPromise = result ? wikipediaImage(result.title, result.lang) : Promise.resolve(null);
           imgPromise.then(url => {
-            if (url) { cachedImgUrl = url; injectImg(url); }
-            else wikimediaCommonsSearch(lat, lng).then(u => { if (u) { cachedImgUrl = u; injectImg(u); } });
+            if (url) addImg(url);
+            else wikimediaCommonsSearch(lat, lng).then(addImg);
           });
         });
-        return; // link handled above for hist
+        return;
 
       } else {
-        wikimediaCommonsSearch(lat, lng).then(url => { if (url) { cachedImgUrl = url; injectImg(url); } });
+        wikimediaCommonsSearch(lat, lng).then(addImg);
       }
     }
 
-    // Link chain (hist without static link, image already known)
     if (needsLink) {
       findHistWikipedia(tags, lat, lng).then(result => {
         if (result) { cachedLink = { href: result.href, label: result.label }; injectLink(result.href, result.label); }
@@ -868,12 +915,14 @@ async function loadCategory(cat, bbox) {
     }
 
     const [lat, lng] = latlng;
-    const imgUrl = osmImageUrl(tags) || nearestMapillary(lat, lng);
-    const icon = makeIcon(cat.color, !!imgUrl);
+    const osmUrls = osmImageUrls(tags);
+    const mapillaryUrl = nearestMapillary(lat, lng);
+    if (mapillaryUrl && !osmUrls.includes(mapillaryUrl)) osmUrls.push(mapillaryUrl);
+    const icon = makeIcon(cat.color, osmUrls.length > 0);
 
     const marker = L.marker(latlng, { icon });
-    marker.bindPopup(buildPopupHtml(elem, cat, imgUrl), { maxWidth: 260 });
-    attachPopupAsync(marker, elem, cat, latlng, imgUrl);
+    marker.bindPopup(buildPopupHtml(elem, cat, osmUrls), { maxWidth: 260 });
+    attachPopupAsync(marker, elem, cat, latlng, osmUrls);
     state.markers[cat.key].push(marker);
     state.counts[cat.key]++;
     added++;
@@ -930,12 +979,14 @@ async function loadArea() {
       }
 
       const [lat, lng] = latlng;
-      const imgUrl = osmImageUrl(tags) || nearestMapillary(lat, lng);
-      const markerIcon = makeIcon(cat.color, !!imgUrl);
+      const osmUrls = osmImageUrls(tags);
+      const mapillaryUrl = nearestMapillary(lat, lng);
+      if (mapillaryUrl && !osmUrls.includes(mapillaryUrl)) osmUrls.push(mapillaryUrl);
+      const markerIcon = makeIcon(cat.color, osmUrls.length > 0);
 
       const marker = L.marker(latlng, { icon: markerIcon });
-      marker.bindPopup(buildPopupHtml(elem, cat, imgUrl), { maxWidth: 260 });
-      attachPopupAsync(marker, elem, cat, latlng, imgUrl);
+      marker.bindPopup(buildPopupHtml(elem, cat, osmUrls), { maxWidth: 260 });
+      attachPopupAsync(marker, elem, cat, latlng, osmUrls);
       state.markers[cat.key].push(marker);
       state.counts[cat.key]++;
 
